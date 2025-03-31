@@ -50,7 +50,6 @@ build/
 .flutter-plugins
 .flutter-plugins-dependencies
 *.lock
-android/
 ios/
 web/
 windows/

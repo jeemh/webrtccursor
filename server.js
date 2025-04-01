@@ -30,33 +30,34 @@ io.on('connection', (socket) => {
   // 통화 요청
   socket.on('call', (data) => {
     const { target, offer } = data;
-    console.log(`${socket.userId}가 ${target}에게 통화 요청`);
-    
+    console.log(`[통화 요청] ${socket.userId} -> ${target}`);
     if (activeUsers[target]) {
       io.to(activeUsers[target]).emit('incomingCall', {
         caller: socket.userId,
         offer: offer
       });
+    } else {
+      console.log(`[오류] 대상 사용자 ${target} 없음`);
     }
   });
   
   // 통화 응답
   socket.on('answer', (data) => {
     const { target, answer } = data;
-    console.log(`${socket.userId}가 ${target}에게 응답`);
-    
+    console.log(`[통화 응답] ${socket.userId} -> ${target}`);
     if (activeUsers[target]) {
       io.to(activeUsers[target]).emit('callAnswered', {
         answerer: socket.userId,
         answer: answer
       });
+    } else {
+      console.log(`[오류] 대상 사용자 ${target} 없음`);
     }
   });
   
   // ICE 후보 전달
   socket.on('ice-candidate', (data) => {
     const { target, candidate } = data;
-    
     if (activeUsers[target]) {
       io.to(activeUsers[target]).emit('ice-candidate', {
         sender: socket.userId,
@@ -84,6 +85,10 @@ io.on('connection', (socket) => {
       io.emit('updateUserList', Object.keys(activeUsers));
     }
   });
+});
+
+app.get('/test', (req, res) => {
+  res.send('서버가 정상 작동 중입니다!');
 });
 
 const PORT = process.env.PORT || 5000;

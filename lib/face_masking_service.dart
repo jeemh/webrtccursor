@@ -2,63 +2,138 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:image/image.dart' as img;
+import 'package:flutter/foundation.dart';
+import 'package:camera/camera.dart';
+import 'dart:ui' as ui;
+import 'dart:io';
+import 'package:flutter/services.dart';
+import 'package:google_mlkit_commons/google_mlkit_commons.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+
+// 너구리 마스크 이미지 메모리 캐시
+ui.Image? _raccoonImage;
+
+class InputImagePlaneMetadata {
+  final int bytesPerRow;
+  final int height;
+  final int width;
+
+  InputImagePlaneMetadata({
+    required this.bytesPerRow,
+    required this.height,
+    required this.width,
+  });
+}
 
 class FaceMaskingService {
-  final FaceDetector _faceDetector = FaceDetector(
-    options: FaceDetectorOptions(
-      performanceMode: FaceDetectorMode.accurate,
-      enableContours: true,
-    ),
-  );
+  final FaceDetector _faceDetector;
+  bool _isProcessing = false;
+  ui.Image? raccoonImage;
 
-  // 이미지에서 얼굴을 감지하고 블러 또는 마스크 처리
-  Future<Uint8List?> maskFacesInImage(Uint8List imageBytes) async {
-    final inputImage = InputImage.fromBytes(
-      bytes: imageBytes,
-      metadata: InputImageMetadata(
-        size: Size(640, 480), // 이미지 크기에 맞게 조정 필요
-        rotation: InputImageRotation.rotation0deg,
-        format: InputImageFormat.nv21, // 이미지 포맷에 맞게 조정 필요
-        bytesPerRow: 640, // 이미지 너비에 맞게 조정 필요
-      ),
-    );
+  FaceMaskingService()
+    : _faceDetector = FaceDetector(
+        options: FaceDetectorOptions(
+          enableLandmarks: true,
+          enableContours: true,
+          enableTracking: true,
+          performanceMode: FaceDetectorMode.accurate,
+          minFaceSize: 0.15,
+        ),
+      ) {
+    _loadRaccoonImage();
+  }
 
-    final faces = await _faceDetector.processImage(inputImage);
-
-    if (faces.isEmpty) return imageBytes;
-
-    // 이미지 디코딩
-    final decodedImage = img.decodeImage(imageBytes);
-    if (decodedImage == null) return null;
-
-    // 얼굴 영역에 블러 또는 마스크 적용
-    for (final face in faces) {
-      final boundingBox = face.boundingBox;
-
-      // 얼굴 영역을 추출하여 블러 처리
-      final faceRegion = img.copyCrop(
-        decodedImage,
-        x: boundingBox.left.toInt(),
-        y: boundingBox.top.toInt(),
-        width: boundingBox.width.toInt(),
-        height: boundingBox.height.toInt(),
-      );
-
-      // 블러 처리 적용
-      img.gaussianBlur(faceRegion, radius: 20);
-
-      // 처리된 영역을 다시 원본 이미지에 복사
-      img.compositeImage(
-        decodedImage,
-        faceRegion,
-        dstX: boundingBox.left.toInt(),
-        dstY: boundingBox.top.toInt(),
-      );
+  // 너구리 이미지 로드
+  Future<void> _loadRaccoonImage() async {
+    if (_raccoonImage != null) {
+      raccoonImage = _raccoonImage;
+      return;
     }
 
-    // 처리된 이미지 인코딩하여 반환
-    return Uint8List.fromList(img.encodeJpg(decodedImage));
+    try {
+      final ByteData data = await NetworkAssetBundle(
+        Uri.parse(
+          'https://i.namu.wiki/i/yYbLn1JjcwHiJXSYSPRs46iaW2FytB5AQc1tBpoftJIN_ltHuHzLx09Glc27azN0Rk-SAqzQkB5QQxxDOVOu8w.webp',
+        ),
+      ).load('');
+
+      final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+      final frameInfo = await codec.getNextFrame();
+
+      raccoonImage = frameInfo.image;
+      _raccoonImage = raccoonImage; // 캐시에 저장
+
+      print('너구리 이미지 로드 완료: ${raccoonImage!.width}x${raccoonImage!.height}');
+    } catch (e) {
+      print('너구리 이미지 로드 실패: $e');
+    }
+  }
+
+  // 영상 스트림 처리
+  Future<List<Face>> processImage(CameraImage image) async {
+    if (_isProcessing) return [];
+    _isProcessing = true;
+
+    try {
+      final WriteBuffer allBytes = WriteBuffer();
+      for (final Plane plane in image.planes) {
+        allBytes.putUint8List(plane.bytes);
+      }
+      final bytes = allBytes.done().buffer.asUint8List();
+
+      final imageSize = Size(image.width.toDouble(), image.height.toDouble());
+      final imageRotation = InputImageRotation.rotation0deg;
+
+      final inputImageFormat = InputImageFormatValue.fromRawValue(
+        image.format.raw,
+      );
+      if (inputImageFormat == null) {
+        _isProcessing = false;
+        return [];
+      }
+
+      final planeData =
+          image.planes.map((plane) {
+            return InputImageMetadata(
+              bytesPerRow: plane.bytesPerRow,
+              size: Size(
+                plane.width?.toDouble() ?? 0.0,
+                plane.height?.toDouble() ?? 0.0,
+              ),
+              rotation: InputImageRotation.rotation0deg,
+              format: inputImageFormat,
+            );
+          }).toList();
+
+      final inputImage = InputImage.fromBytes(
+        bytes: bytes,
+        metadata: InputImageMetadata(
+          size: imageSize,
+          rotation: imageRotation,
+          format: inputImageFormat,
+          bytesPerRow: planeData.first.bytesPerRow,
+        ),
+      );
+
+      final faces = await _faceDetector.processImage(inputImage);
+      return faces;
+    } catch (e) {
+      print('Face detection error: $e');
+      return [];
+    } finally {
+      _isProcessing = false;
+    }
+  }
+
+  // WebRTC 스트림을 처리하는 메서드
+  Future<MediaStream> processVideoStream(MediaStream stream) async {
+    // 이미지 로드 확인
+    if (raccoonImage == null) {
+      await _loadRaccoonImage();
+    }
+
+    // 원본 스트림 반환 (실제 처리는 프레임 단위로 이루어짐)
+    return stream;
   }
 
   void dispose() {
